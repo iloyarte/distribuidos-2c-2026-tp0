@@ -1,41 +1,89 @@
 import socket
-import logger
-import safe_socket
 
-_ECHO_SERVER_MESSAGE_SIZE = 1024
+import logger
+import protocol
+from domain.message import Message
+from domain.message_header import MessageHeader, MessageType
+from domain.parser import parse_agency_id, parse_bet
+from service import LotteryService
 
 
 class Server:
-    def __init__(self, server_host: str, server_port: int) -> None:
+    def __init__(
+        self, server_host: str, server_port: int, lottery_service: LotteryService
+    ) -> None:
         self.server_host = server_host
         self.server_port = server_port
+        self.lottery_service = lottery_service
 
-    def _handle_client(self, client_socket):
+    def _handle_agency_connection(self, client_socket: socket.socket) -> None:
         action = "handle-client"
         message_amount = 0
+
         try:
             logger.info(action, logger.LogResult.in_progress)
-            while True:
-                client_message = safe_socket.recv_all(
-                    client_socket, _ECHO_SERVER_MESSAGE_SIZE
-                )
-                if not client_message:
-                    logger.info(
-                        action,
-                        logger.LogResult.success,
-                        "messages-amount",
-                        message_amount,
-                    )
-                    return
-                message_amount += 1
-                safe_socket.send_all(client_socket, client_message)
+            with client_socket:
+                while True:
+                    header, payload = protocol.receive_message(client_socket)
+                    message_amount += 1
+                    self._dispatch(client_socket, header, payload)
+                    if header.type == MessageType.AWAITING_WINNERS:
+                        break
+            logger.info(
+                action, logger.LogResult.success, "messages-amount", message_amount
+            )
         except Exception as e:
             logger.error(
                 action, logger.LogResult.fail, "messages-amount", message_amount
             )
             raise e
 
-    def run(self):
+    def _dispatch(self, client_socket: socket.socket, header: MessageHeader, payload: bytes) -> None:
+        match header.type:
+            case MessageType.BET:
+                self._handle_bet(client_socket, payload)
+            case MessageType.AWAITING_WINNERS:
+                self._handle_awaiting_winners(client_socket, payload)
+            case _:
+                raise ValueError(f"unexpected message type: {header.type}")
+
+
+    def _handle_bet(self, client_socket: socket.socket, payload: bytes) -> None:
+        bet = parse_bet(payload)
+        self.lottery_service.register_bets([bet])
+        protocol.send_message(client_socket, Message.ack())
+
+    def _receive_ack(self, client_socket: socket.socket) -> None:
+        header, _ = protocol.receive_message(client_socket)
+        if header.type != MessageType.ACK:
+            raise ValueError(f"expected ack message type, got {header.type}")
+
+    def _handle_awaiting_winners(self, client_socket: socket.socket, payload: bytes) -> None:
+        action = "send-winners"
+        agency_id = parse_agency_id(payload)
+        winners_amount = 0
+
+        logger.info(action, logger.LogResult.in_progress, "agency-id", agency_id)
+        protocol.send_message(client_socket, Message.ack())
+
+        for bet in self.lottery_service.winners_for(agency_id):
+            protocol.send_message(client_socket, Message.winner(bet))
+            self._receive_ack(client_socket)
+            winners_amount += 1
+
+        protocol.send_message(client_socket, Message.finish())
+        self._receive_ack(client_socket)
+        logger.info(
+            action,
+            logger.LogResult.success,
+            "agency-id",
+            agency_id,
+            "winners-amount",
+            winners_amount,
+        )
+
+
+    def run(self) -> None:
         action = "accept-connection"
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
             server_socket.bind((self.server_host, self.server_port))
@@ -44,9 +92,13 @@ class Server:
                 try:
                     logger.info(action, logger.LogResult.in_progress)
                     client_socket, _ = server_socket.accept()
-                except Exception as e:
+                except Exception:
                     logger.error(action, logger.LogResult.fail)
-                    raise e
+                    raise
                 logger.info(action, logger.LogResult.success)
-
-                self._handle_client(client_socket)
+                try:
+                    self._handle_agency_connection(client_socket)
+                except Exception as e:
+                    logger.error(
+                        "drop-client-connection", logger.LogResult.fail, "err", e
+                    )
