@@ -7,12 +7,14 @@ from service import LotteryService
 
 SERVER_HOST = os.environ["SERVER_HOST"]
 SERVER_PORT = int(os.environ["SERVER_PORT"])
-SERVER_STORAGE_DIR = os.environ["SERVER_STORAGE_DIR"]
+SERVER_STORAGE_DIR = os.environ.get("SERVER_STORAGE_DIR", "/data")
+AGENCY_QUORUM_MIN = int(os.environ.get("AGENCY_QUORUM_MIN", "1"))
 
 
 def main():
     logger.init()
-    s = server.Server(SERVER_HOST, SERVER_PORT, LotteryService(SERVER_STORAGE_DIR))
+    lottery_service = LotteryService(SERVER_STORAGE_DIR, AGENCY_QUORUM_MIN)
+    s = server.Server(SERVER_HOST, SERVER_PORT, lottery_service)
     try:
         s.run()
     except Exception as e:

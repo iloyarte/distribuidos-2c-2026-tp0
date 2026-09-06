@@ -1,4 +1,5 @@
 import socket
+import threading
 
 import logger
 import protocol
@@ -15,6 +16,7 @@ class Server:
         self.server_host = server_host
         self.server_port = server_port
         self.lottery_service = lottery_service
+        self._agency_threads: list[threading.Thread] = []
 
     def _handle_agency_connection(self, client_socket: socket.socket) -> None:
         action = "handle-client"
@@ -83,22 +85,50 @@ class Server:
         )
 
 
-    def run(self) -> None:
+    def _serve_agency(self, client_socket: socket.socket) -> None:
+        try:
+            self._handle_agency_connection(client_socket)
+        except Exception as e:
+            logger.error("drop-client-connection", logger.LogResult.fail, "err", e)
+
+    def _spawn_agency_thread(self, client_socket: socket.socket) -> None:
+        thread = threading.Thread(target=self._serve_agency, args=(client_socket,))
+        self._agency_threads.append(thread)
+        thread.start()
+
+    def _reap_finished_threads(self) -> None:
+        alive = []
+        for thread in self._agency_threads:
+            if thread.is_alive():
+                alive.append(thread)
+            else:
+                thread.join()
+        self._agency_threads = alive
+
+    def _join_agency_threads(self) -> None:
+        for thread in self._agency_threads:
+            thread.join()
+        self._agency_threads = []
+
+    def _accept_connection(self, server_socket: socket.socket) -> socket.socket:
         action = "accept-connection"
+        try:
+            logger.info(action, logger.LogResult.in_progress)
+            client_socket, _ = server_socket.accept()
+        except Exception:
+            logger.error(action, logger.LogResult.fail)
+            raise
+        logger.info(action, logger.LogResult.success)
+        return client_socket
+
+    def run(self) -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
             server_socket.bind((self.server_host, self.server_port))
             server_socket.listen()
-            while True:
-                try:
-                    logger.info(action, logger.LogResult.in_progress)
-                    client_socket, _ = server_socket.accept()
-                except Exception:
-                    logger.error(action, logger.LogResult.fail)
-                    raise
-                logger.info(action, logger.LogResult.success)
-                try:
-                    self._handle_agency_connection(client_socket)
-                except Exception as e:
-                    logger.error(
-                        "drop-client-connection", logger.LogResult.fail, "err", e
-                    )
+            try:
+                while True:
+                    client_socket = self._accept_connection(server_socket)
+                    self._spawn_agency_thread(client_socket)
+                    self._reap_finished_threads()
+            finally:
+                self._join_agency_threads()
