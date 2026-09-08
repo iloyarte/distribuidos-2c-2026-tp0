@@ -1,1 +1,1 @@
-from .lottery_service import LotteryService
+from .lottery_service import LotteryService, ShutdownError

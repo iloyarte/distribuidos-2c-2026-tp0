@@ -17,6 +17,9 @@ class Server:
         self.server_port = server_port
         self.lottery_service = lottery_service
         self._agency_threads: list[threading.Thread] = []
+        self._agency_sockets: list[socket.socket] = []
+        self._server_socket: socket.socket | None = None
+        self._running = True
 
     def _handle_agency_connection(self, client_socket: socket.socket) -> None:
         action = "handle-client"
@@ -90,9 +93,12 @@ class Server:
             self._handle_agency_connection(client_socket)
         except Exception as e:
             logger.error("drop-client-connection", logger.LogResult.fail, "err", e)
+        finally:
+            self._agency_sockets.remove(client_socket)
 
     def _spawn_agency_thread(self, client_socket: socket.socket) -> None:
         thread = threading.Thread(target=self._serve_agency, args=(client_socket,))
+        self._agency_sockets.append(client_socket)
         self._agency_threads.append(thread)
         thread.start()
 
@@ -122,13 +128,35 @@ class Server:
         return client_socket
 
     def run(self) -> None:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        with self._server_socket as server_socket:
             server_socket.bind((self.server_host, self.server_port))
             server_socket.listen()
             try:
-                while True:
-                    client_socket = self._accept_connection(server_socket)
+                while self._running:
+                    try:
+                        client_socket = self._accept_connection(server_socket)
+                    except OSError:
+                        if not self._running:
+                            break
+                        raise
                     self._spawn_agency_thread(client_socket)
                     self._reap_finished_threads()
             finally:
                 self._join_agency_threads()
+
+    def shutdown(self) -> None:
+        logger.info("server-shutdown", logger.LogResult.in_progress)
+        self._running = False
+        self.lottery_service.shutdown()
+        for agency_socket in list(self._agency_sockets):
+            self._unblock_socket(agency_socket)
+        self._unblock_socket(self._server_socket)
+
+    def _unblock_socket(self, sock: socket.socket | None) -> None:
+        if sock is None:
+            return
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass

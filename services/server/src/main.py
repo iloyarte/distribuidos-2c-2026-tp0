@@ -1,4 +1,5 @@
 import os
+import signal
 import sys
 
 import logger
@@ -15,6 +16,7 @@ def main():
     logger.init()
     lottery_service = LotteryService(SERVER_STORAGE_DIR, AGENCY_QUORUM_MIN)
     s = server.Server(SERVER_HOST, SERVER_PORT, lottery_service)
+    signal.signal(signal.SIGTERM, lambda *_: s.shutdown())
     try:
         s.run()
     except Exception as e:

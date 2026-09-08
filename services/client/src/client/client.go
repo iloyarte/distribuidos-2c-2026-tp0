@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"context"
 	"encoding/csv"
 	"net"
 	"os"
@@ -33,8 +34,8 @@ type Client struct {
 	config  ClientConfig
 }
 
-func NewClient(config ClientConfig) (*Client, error) {
-	conn, err := connectToServer(config.ServerHost, config.ServerPort)
+func NewClient(ctx context.Context, config ClientConfig) (*Client, error) {
+	conn, err := connectToServer(ctx, config.ServerHost, config.ServerPort)
 	if err != nil {
 		logger.Warn("connect-to-server", logger.Fail)
 		return nil, err
@@ -48,7 +49,7 @@ func NewClient(config ClientConfig) (*Client, error) {
 	return client, nil
 }
 
-func connectToServer(host, port string) (net.Conn, error) {
+func connectToServer(ctx context.Context, host, port string) (net.Conn, error) {
 	const action = "connect-to-server"
 	var err error
 	var conn net.Conn
@@ -58,7 +59,11 @@ func connectToServer(host, port string) (net.Conn, error) {
 		conn, err = net.Dial("tcp", host+":"+port)
 		if err != nil {
 			logger.Warn(action, logger.Fail, "attempt", i)
-			time.Sleep(CONNECTION_ATTEMPS_DELAY_MS * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(CONNECTION_ATTEMPS_DELAY_MS * time.Millisecond):
+			}
 			continue
 		}
 
@@ -69,9 +74,10 @@ func connectToServer(host, port string) (net.Conn, error) {
 	return conn, err
 }
 
-func (client *Client) Run() error {
+func (client *Client) Run(ctx context.Context) error {
 	const mainAction = "lottery-round"
 	defer client.conn.Close()
+	defer client.closeConnOnShutdown(ctx)()
 
 	logger.Info(mainAction, logger.InProgress, "agency-id", client.config.AgencyId)
 
@@ -87,7 +93,7 @@ func (client *Client) Run() error {
 	}
 	defer outputFile.Close()
 
-	sendBetsErr := client.sendBetsBatch(inputFile)
+	sendBetsErr := client.sendBetsBatch(ctx, inputFile)
 	if sendBetsErr != nil {
 		return sendBetsErr
 	}
@@ -139,11 +145,29 @@ func (client *Client) createOutputFile() (*os.File, error) {
 	return outputFile, nil
 }
 
-func (client *Client) sendBetsBatch(file *os.File) error {
+func (client *Client) closeConnOnShutdown(ctx context.Context) func() {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			client.conn.Close()
+		case <-done:
+		}
+	}()
+	return func() { close(done) }
+}
+
+func (client *Client) sendBetsBatch(ctx context.Context, file *os.File) error {
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, BUFFER_SIZE), MAX_LINE_SIZE)
 
 	for batchId := 1; ; batchId++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		logger.Info("read-bets-batch", logger.InProgress, "batch-id", batchId)
 		bets, err := readBatch(scanner, int(client.config.BatchSize))
 		if err != nil {
