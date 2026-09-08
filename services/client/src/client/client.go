@@ -24,6 +24,7 @@ type ClientConfig struct {
 	AgencyId   string
 	InputFile  string
 	OutputFile string
+	BatchSize  uint32
 }
 
 type Client struct {
@@ -86,7 +87,7 @@ func (client *Client) Run() error {
 	}
 	defer outputFile.Close()
 
-	sendBetsErr := client.sendBets(inputFile)
+	sendBetsErr := client.sendBetsBatch(inputFile)
 	if sendBetsErr != nil {
 		return sendBetsErr
 	}
@@ -138,18 +139,22 @@ func (client *Client) createOutputFile() (*os.File, error) {
 	return outputFile, nil
 }
 
-func (client *Client) sendBets(file *os.File) error {
+func (client *Client) sendBetsBatch(file *os.File) error {
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, BUFFER_SIZE), MAX_LINE_SIZE)
 
-	for messageId := 1; scanner.Scan(); messageId++ {
-		bet, betParseErr := domain.ParseBetLine(scanner.Text())
-		if betParseErr != nil {
-			return betParseErr
+	for batchId := 1; ; batchId++ {
+		logger.Info("read-bets-batch", logger.InProgress, "batch-id", batchId)
+		bets, err := readBatch(scanner, int(client.config.BatchSize))
+		if err != nil {
+			return err
 		}
-		sendBetErr := client.sendBet(bet, messageId)
-		if sendBetErr != nil {
-			return sendBetErr
+		if len(bets) == 0 {
+			break
+		}
+
+		if err := client.sendBets(bets, batchId); err != nil {
+			return err
 		}
 	}
 
@@ -160,10 +165,22 @@ func (client *Client) sendBets(file *os.File) error {
 	return nil
 }
 
-func (client *Client) sendBet(bet domain.Bet, betId int) error {
-	return client.step("send-bet", func() error {
-		return client.service.SendBet(bet)
-	}, "bet-id", betId)
+func readBatch(scanner *bufio.Scanner, batchSize int) ([]domain.Bet, error) {
+	var bets []domain.Bet
+	for i := 0; i < batchSize && scanner.Scan(); i++ {
+		bet, err := domain.ParseBetLine(scanner.Text())
+		if err != nil {
+			return nil, err
+		}
+		bets = append(bets, bet)
+	}
+	return bets, nil
+}
+
+func (client *Client) sendBets(bets []domain.Bet, batchId int) error {
+	return client.step("send-bets", func() error {
+		return client.service.SendBets(bets)
+	}, "batch-id", batchId)
 }
 
 func (client *Client) notifyAwaitingWinners() error {
@@ -207,4 +224,25 @@ func (client *Client) step(action string, fn func() error, args ...any) error {
 	}
 	logger.Info(action, logger.Success, args...)
 	return nil
+}
+
+func (client *Client) ReadBets(file *os.File) []domain.Bet {
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, BUFFER_SIZE), MAX_LINE_SIZE)
+
+	var bets []domain.Bet
+	for scanner.Scan() {
+		bet, betParseErr := domain.ParseBetLine(scanner.Text())
+		if betParseErr != nil {
+			logger.Error("parse-bet", logger.Fail, "line", scanner.Text())
+			continue
+		}
+		bets = append(bets, bet)
+	}
+
+	if err := scanner.Err(); err != nil {
+		logger.Error("read-file", logger.Fail, "input-file", client.config.InputFile)
+	}
+
+	return bets
 }

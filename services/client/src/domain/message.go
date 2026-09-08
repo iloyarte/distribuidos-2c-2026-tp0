@@ -24,8 +24,12 @@ func AckMessage() Message {
 	}
 }
 
-func BetMessage(agencyId string, bet Bet) Message {
-	payload := bet.Serialize(agencyId)
+func BetMessage(agencyId string, bets []Bet) Message {
+	var payload []byte
+	for _, b := range bets {
+		payload = append(payload, b.Serialize(agencyId)...)
+		payload = append(payload, '\n')
+	}
 	return Message{
 		Header: MessageHeader{
 			Type:       MessageTypeBet,

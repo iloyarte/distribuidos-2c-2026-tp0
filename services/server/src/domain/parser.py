@@ -23,6 +23,10 @@ def parse_bet(payload: bytes) -> Bet:
     )
 
 
+def parse_bets(payload: bytes) -> list[Bet]:
+    return [parse_bet(line) for line in payload.splitlines() if line]
+
+
 def parse_agency_id(payload: bytes) -> int:
     return int(payload.decode(_ENCODING).strip())
 

@@ -70,11 +70,11 @@ func TestSendBetSendsBetMessageAndConsumesAck(t *testing.T) {
 	connection := newFakeConnection(domain.AckMessage())
 	service := NewLotteryService(connection, AGENCY_ID)
 
-	if err := service.SendBet(bet); err != nil {
+	if err := service.SendBets([]domain.Bet{bet}); err != nil {
 		t.Fatalf("send_bet_sends_bet_message_and_consumes_ack: expected no error, got %v", err)
 	}
 
-	expected := sentBytes(domain.BetMessage(AGENCY_ID, bet))
+	expected := sentBytes(domain.BetMessage(AGENCY_ID, []domain.Bet{bet}))
 	if !bytes.Equal(connection.outgoing.Bytes(), expected) {
 		t.Fatalf("send_bet_sends_bet_message_and_consumes_ack: expected %v, got %v", expected, connection.outgoing.Bytes())
 	}
@@ -87,7 +87,7 @@ func TestSendBetFailsWhenResponseIsNotAck(t *testing.T) {
 	connection := newFakeConnection(finishMessage())
 	service := NewLotteryService(connection, AGENCY_ID)
 
-	if err := service.SendBet(aBet()); err == nil {
+	if err := service.SendBets([]domain.Bet{aBet()}); err == nil {
 		t.Fatal("send_bet_fails_when_response_is_not_ack: expected error, got nil")
 	}
 }
@@ -96,7 +96,7 @@ func TestSendBetFailsWhenConnectionIsClosed(t *testing.T) {
 	connection := newFakeConnection()
 	service := NewLotteryService(connection, AGENCY_ID)
 
-	if err := service.SendBet(aBet()); err == nil {
+	if err := service.SendBets([]domain.Bet{aBet()}); err == nil {
 		t.Fatal("send_bet_fails_when_connection_is_closed: expected error, got nil")
 	}
 }
@@ -153,7 +153,7 @@ func TestReadWinnersWithoutWinnersReturnsEmptyList(t *testing.T) {
 }
 
 func TestReadWinnersFailsOnUnexpectedMessageType(t *testing.T) {
-	connection := newFakeConnection(domain.BetMessage(AGENCY_ID, aBet()))
+	connection := newFakeConnection(domain.BetMessage(AGENCY_ID, []domain.Bet{aBet()}))
 	service := NewLotteryService(connection, AGENCY_ID)
 
 	winners, err := service.ReadWinners()

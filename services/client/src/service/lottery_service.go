@@ -18,8 +18,8 @@ func NewLotteryService(conn io.ReadWriter, agencyId string) *LotteryService {
 	return &LotteryService{conn: conn, agencyId: agencyId}
 }
 
-func (service *LotteryService) SendBet(bet domain.Bet) error {
-	message := domain.BetMessage(service.agencyId, bet)
+func (service *LotteryService) SendBets(bets []domain.Bet) error {
+	message := domain.BetMessage(service.agencyId, bets)
 	if err := protocol.SendMessage(service.conn, message); err != nil {
 		return err
 	}

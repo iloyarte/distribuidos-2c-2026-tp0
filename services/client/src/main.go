@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	client "github.com/7574-sistemas-distribuidos/tp-nivelador/src/client"
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
@@ -42,12 +43,24 @@ func loadConfig() (client.ClientConfig, error) {
 		return client.ClientConfig{}, err
 	}
 
+	batchSize, err := requireEnv("BATCH_SIZE")
+	if err != nil {
+		return client.ClientConfig{}, err
+	}
+
+	intBatchSize, parseErr := strconv.Atoi(batchSize)
+	if parseErr != nil {
+		return client.ClientConfig{}, parseErr
+	}
+
+
 	return client.ClientConfig{
 		ServerHost: serverHost,
 		ServerPort: serverPort,
 		AgencyId:   agencyId,
 		InputFile:  inputFile,
 		OutputFile: outputFile,
+		BatchSize:  uint32(intBatchSize),
 	}, nil
 }
 

@@ -5,7 +5,7 @@ import logger
 import protocol
 from domain.message import Message
 from domain.message_header import MessageHeader, MessageType
-from domain.parser import parse_agency_id, parse_bet
+from domain.parser import parse_agency_id, parse_bets
 from service import LotteryService
 
 
@@ -51,8 +51,8 @@ class Server:
 
 
     def _handle_bet(self, client_socket: socket.socket, payload: bytes) -> None:
-        bet = parse_bet(payload)
-        self.lottery_service.register_bets([bet])
+        bets = parse_bets(payload)
+        self.lottery_service.register_bets(bets)
         protocol.send_message(client_socket, Message.ack())
 
     def _receive_ack(self, client_socket: socket.socket) -> None:

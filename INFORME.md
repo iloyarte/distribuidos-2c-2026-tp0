@@ -10,19 +10,28 @@
 
 Todos los mensajes se envían encodeados en bytes a través de un socket.
 
-El mensaje consta de un header y un payload. El envío siempre se realiza en dos tiempos, primero se envía el header y
-luego el payload, de tamaño variable. La estructura del mensaje es la siguiente:
+El mensaje consta de un header de tamaño fijo y un payload de tamaño variable. La estructura es la siguiente:
 
-| Campo         | Tamaño  | Descripción                               |
-|---------------|---------|-------------------------------------------|
-| `type`        | 1 byte  | Tipo de mensaje (`MessageType`)           |
-| `payload_len` | 4 bytes | Longitud del payload en bytes, big-endian |
-| `payload`     | N bytes | Contenido, codificado en UTF-8            |
+| Campo         | Tamaño  | Descripción                                      |
+|---------------|---------|--------------------------------------------------|
+| `type`        | 1 byte  | Tipo de mensaje (`MessageType`)                  |
+| `payload_len` | 4 bytes | Longitud del payload en bytes, big-endian        |
+| `payload`     | N bytes | Registros separados por `\n`, en UTF-8           |
 
-El header tiene tamaño constante (`HEADER_SIZE = 5`), por lo que el receptor lee primero 5 bytes, decodificar
-`payload_len` y recién entonces leer exactamente esa cantidad de bytes. Esto elimina toda ambigüedad sobre dónde termina
-un mensaje y empieza el siguiente: **el protocolo no depende de delimitadores ni de que el payload no contenga ciertos
-caracteres.**
+El header tiene tamaño constante (`HEADER_SIZE = 5`), por lo que el receptor lee primero 5 bytes, decodifica
+`payload_len` y recién entonces lee exactamente esa cantidad de bytes. Esto elimina toda ambigüedad sobre dónde termina
+un mensaje y empieza el siguiente: **el límite del mensaje no depende de delimitadores ni de que el payload no contenga
+ciertos caracteres.**
+
+El header **no** lleva la cantidad de registros del lote. Es un dato redundante: el payload es una secuencia de líneas y
+los campos de una apuesta vienen de un CSV de una línea por apuesta, así que ninguno puede contener un `\n` y contar las
+líneas del payload da exactamente el tamaño del lote. Un campo `count` sólo agregaba una segunda fuente de verdad para el
+mismo dato —más la validación de que ambas coincidan— sin habilitar nada que el payload no diga ya por sí mismo.
+
+Tanto el envío como la recepción se hacen en dos pasos: primero el header y después el payload. En la recepción no hay
+alternativa, porque hasta no decodificar `payload_len` no se sabe cuántos bytes pedir; en el envío se mantiene la
+simetría con dos `SendAll` / `send_all` sucesivos. Ambas primitivas iteran hasta cubrir todos los bytes pedidos, de modo
+que el protocolo es inmune a lecturas y escrituras parciales del socket.
 
 La serialización del header está definida de forma explícita en ambos lenguajes, con el mismo layout y el mismo
 endianness:
@@ -32,17 +41,26 @@ endianness:
 
 ### 1.2 Tipos de mensaje
 
-| Tipo | Nombre             | Emisor   | Payload                                                 |
-|------|--------------------|----------|---------------------------------------------------------|
-| `1`  | `ACK`              | ambos    | vacío (`payload_len = 0`)                               |
-| `2`  | `BET`              | cliente  | `agency_id,nombre,apellido,documento,nacimiento,numero` |
-| `3`  | `AWAITING_WINNERS` | cliente  | `agency_id`                                             |
-| `4`  | `WINNER`           | servidor | `nombre,apellido,documento,nacimiento,numero`           |
-| `5`  | `FINISH`           | servidor | vacío (`payload_len = 0`)                               |
+| Tipo | Nombre             | Emisor   | Payload                                                     |
+|------|--------------------|----------|-------------------------------------------------------------|
+| `1`  | `ACK`              | ambos    | vacío (`payload_len = 0`)                                   |
+| `2`  | `BET`              | cliente  | N × `agency_id,nombre,apellido,documento,nacimiento,numero` |
+| `3`  | `AWAITING_WINNERS` | cliente  | `agency_id`                                                 |
+| `4`  | `WINNER`           | servidor | `nombre,apellido,documento,nacimiento,numero`               |
+| `5`  | `FINISH`           | servidor | vacío (`payload_len = 0`)                                   |
+
+`BET` es el único mensaje multi-registro: sus apuestas van separadas por `\n`. Como los campos de una apuesta provienen
+de un CSV de una línea por apuesta, ninguno puede contener un salto de línea, así que el separador alcanza para
+delimitarlas y el receptor no necesita que el header le anuncie cuántas son.
 
 El payload de `BET` incluye el `agency_id` como primer campo (6 campos), mientras que el de `WINNER` lo omite (5
 campos): el servidor sólo devuelve ganadores de la agencia que pregunta, por lo que el campo sería redundante y evita
 tener un modelo extra para el ganador.
+
+**No hay un tipo de mensaje para el error.** Si un lote no se puede procesar —un registro mal formado, un fallo al
+persistir— el servidor loguea el error, **no** emite el `ACK` y cierra la
+conexión. El cliente detecta el EOF mientras espera esa confirmación y aborta la ejecución sin escribir el archivo de
+salida. El `ACK` funciona entonces como confirmación de todo-o-nada del lote completo.
 
 ### 1.3 Secuencia de mensajes
 
@@ -50,8 +68,9 @@ La conversación tiene tres fases ordenadas sobre la misma conexión:
 
 **Fase 1 — Envío de apuestas.**
 
-El cliente lee su archivo CSV línea por línea y por cada apuesta envía un `BET` y **espera el `ACK`** del servidor antes
-de enviar la siguiente.
+El cliente lee su archivo CSV línea por línea, agrupa las apuestas en lotes de `BATCH_SIZE` y por cada lote envía un
+único `BET` y **espera el `ACK`** del servidor antes de armar el siguiente. El último lote del archivo se despacha
+aunque esté incompleto.
 
 **Fase 2 — Notificación de fin de carga.**
 
@@ -61,12 +80,46 @@ esperando los ganadores. Del lado del servidor, se marca el cliente como listo y
 dispare la barrera, se despiertan todos los threads de agencia y se procede a la fase 3.
 
 **Fase 3 — Consulta de ganadores.** Cuando el servidor alcanza el quórum de agencias, realiza el sorteo y envía un
-mensaje `WINNER` por cada ganador de esa agencia, esperando el `ACK` del cliente entre uno y otro. Al terminar envía
-`FINISH`, el cliente responde con un último `ACK` y ambos extremos cierran la conexión. Ese `ACK` final evita que el
-servidor cierre el socket sobre un cliente que todavía está leyendo.
+mensaje `WINNER` por cada ganador de esa agencia, esperando el `ACK` del cliente después de cada uno. Si la agencia no
+tuvo ganadores no se envía ninguno. Al terminar envía `FINISH`, el cliente responde con un último `ACK` y ambos extremos
+cierran la conexión. Ese `ACK` final evita que el servidor cierre el socket sobre un cliente que todavía está leyendo.
+
+El cliente lee en un loop hasta el `FINISH`, acumulando los ganadores que lleguen sin asumir cuántos mensajes son. El
+volumen acá es de otro orden que en la carga de apuestas —doce ganadores en total contra casi 79.000 apuestas—, así que
+no se justifica batchear esta dirección.
 
 Del lado del cliente, si la recepción de ganadores falla a mitad de camino se descarta la lista parcial en lugar de
 escribir un archivo de salida incompleto.
+
+### 1.4 Batching de apuestas
+
+La cantidad de apuestas por lote se configura con la variable de entorno **`BATCH_SIZE`** del cliente, obligatoria como
+el resto de sus variables (`AGENCY_ID`, `SERVER_HOST`, `SERVER_PORT`, `INPUT_FILE`, `OUTPUT_FILE`). El script
+`scripts/generar-compose.sh` la emite en cada bloque de cliente, con valor por defecto `8` y override por entorno:
+
+```bash
+BATCH_SIZE=32 ./scripts/generar-compose.sh 5
+```
+
+**Armado del lote.** El cliente sigue recorriendo el archivo con un `bufio.Scanner`, línea por línea: `readBatch`
+consume como máximo `BATCH_SIZE` líneas, las parsea y devuelve el lote, que se despacha antes de leer el siguiente. El
+archivo nunca se carga entero en memoria: el pico de memoria del cliente queda acotado por el tamaño del lote, no por el
+del archivo de entrada, que en el caso de la agencia 1 tiene casi 27.000 apuestas. El último lote se despacha aunque
+quede incompleto, y un lote vacío es la señal de fin de archivo.
+
+**Procesamiento del lote.** El servidor parte el payload en líneas (`parse_bets`), parsea todas las apuestas y sólo
+entonces hace **una** llamada a `register_bets(bets)`, que persiste el lote completo dentro de una única sección crítica.
+Recién ahí emite el `ACK`. Si algo falla —un registro mal formado, un error al escribir— la excepción sube, no hay `ACK`
+y la conexión se cierra: la agencia nunca recibe una confirmación por un lote procesado a medias.
+
+**Impacto.** Con la carga completa de las 6 agencias, subir `BATCH_SIZE` de 1 a 8 baja los mensajes intercambiados con
+la agencia 1 de 26.937 a 3.368, y proporcionalmente los round-trips de espera del `ACK`.
+
+**Límites.** El techo formal lo pone `payload_len`, que es un `u32`, así que en la práctica el único límite es
+`BATCH_SIZE`. El criterio para elegirlo no es ese techo: un lote más grande significa más memoria retenida en ambos
+extremos y más trabajo perdido si el lote falla, mientras que uno muy chico devuelve el problema original de un
+round-trip por apuesta. Con un registro de ~48 bytes, un lote de 30 apuestas entra cómodo en un solo segmento TCP de una
+red con MTU 1500.
 
 ### 1.5 Diagrama de acciones
 
@@ -82,11 +135,11 @@ sequenceDiagram
     Note over S: accept() → un thread por agencia
 
     rect rgb(235, 244, 255)
-        Note over C1, S: Fase 1 — Carga de apuestas (una por vez, en lock-step)
-        loop por cada línea del CSV
-            C1 ->> S: BET (agency_id,nombre,apellido,doc,nacimiento,numero)
-            Note over S: lock → append a bets.csv → unlock
-            S -->> C1: ACK
+        Note over C1, S: Fase 1 — Carga de apuestas (un lote por vez, en lock-step)
+        loop por cada lote de BATCH_SIZE apuestas
+            C1 ->> S: BET (N registros de apuesta)
+            Note over S: parsea las N apuestas<br/>lock → append del lote → unlock
+            S -->> C1: ACK (sólo si el lote entero se persistió)
         end
     end
 
@@ -98,14 +151,14 @@ sequenceDiagram
     end
 
     Note over C2, S: la agencia 2 recorre las mismas fases 1 y 2
-    C2 ->> S: BET ... / AWAITING_WINNERS
+    C2 ->> S: BET (lotes) ... / AWAITING_WINNERS
     S -->> C2: ACK ...
     Note over S: quórum alcanzado → notify_all()<br/>se libera a todos los threads
 
     rect rgb(235, 255, 240)
         Note over C1, S: Fase 3 — Consulta de ganadores
-        loop por cada ganador de la agencia
-            S ->> C1: WINNER (nombre,apellido,doc,nacimiento,numero)
+        loop por cada ganador de la agencia 1
+            S ->> C1: WINNER (1 registro)
             C1 -->> S: ACK
         end
         S ->> C1: FINISH
@@ -157,7 +210,7 @@ def register_bets(self, bets: list[Bet]) -> None:
 
 def winners_for(self, agency_id: int) -> list[Bet]:
     with self._monitor:
-        self._await_agency_quorum(agency_id)
+        self._wait_for_quorum(agency_id)
         return [
             bet
             for bet in self._lottery.load_bets()
@@ -165,14 +218,20 @@ def winners_for(self, agency_id: int) -> list[Bet]:
         ]
 ```
 
+`register_bets` recibe el lote entero y no una apuesta a la vez, así que un `BET` de `BATCH_SIZE` apuestas toma el
+monitor **una sola vez**. Además de ser la unidad natural de la confirmación todo-o-nada descrita en 1.4, esto reduce
+proporcionalmente la contención entre los threads de agencia: con `BATCH_SIZE = 8` hay un octavo de las tomas de lock
+que con el envío de a una.
+
 ### 2.2 Problema 2 - Barrera de Quorum
 
 Para obtener la suficiente cantidad de agencias antes de calcular los ganadores se implementó un mecanismo de barrera
 simple, cuando un thread llega a la barrera, se registra en `_awaiting_agencies` y si no alcanza el quórum, se bloquea
-esperando a que otro thread lo despierte. El primer thread en llegar despierta a todos mediante la Condition del monitor
+esperando a que otro thread lo despierte. El primer thread que alcanza el quórum despierta a todos mediante la Condition
+del monitor
 
 ```python
-def _await_agency_quorum(self, agency_id: int) -> None:
+def _wait_for_quorum(self, agency_id: int) -> None:
     self._awaiting_agencies.add(agency_id)
     if self._agency_quorum_reached():
         self._monitor.notify_all()

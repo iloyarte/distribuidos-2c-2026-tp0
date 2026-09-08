@@ -8,6 +8,9 @@ Uso: $(basename "$0") <cantidad_clientes> [archivo_salida]
   cantidad_clientes  Cantidad de contenedores cliente a generar (entero >= 0).
   archivo_salida     Ruta del compose a generar (default: docker-compose.yaml).
 
+Variables de entorno:
+  BATCH_SIZE         Apuestas por lote que se le pasa a cada cliente (default: 8).
+
 Ejemplos:
   $(basename "$0") 5
   $(basename "$0") 10 docker-compose.dev.yaml
@@ -37,6 +40,7 @@ SERVER_PORT="5678"
 SERVER_STORAGE_DIR="/data"
 SERVER_STORAGE_HOST_DIR="./data"
 NETWORK_NAME="tp_0_network"
+BATCH_SIZE="${BATCH_SIZE:-8}"
 
 {
     cat <<YAML
@@ -74,6 +78,7 @@ YAML
       - SERVER_PORT=${SERVER_PORT}
       - INPUT_FILE=/input/input-${i}.csv
       - OUTPUT_FILE=/output/output-${i}.csv
+      - BATCH_SIZE=${BATCH_SIZE}
     volumes:
       - ./input:/input
       - ./output:/output
@@ -88,4 +93,4 @@ networks:
 YAML
 } > "$OUTPUT"
 
-echo "Generado '$OUTPUT' con 1 servidor y ${CLIENTS} cliente(s)."
+echo "Generado '$OUTPUT' con 1 servidor y ${CLIENTS} cliente(s), BATCH_SIZE=${BATCH_SIZE}."

@@ -7,7 +7,6 @@ import (
 
 const BET_FIELDS_AMOUNT = 5
 
-// Representa una apuesta tal como viene en el archivo de entrada. Ejemplo:
 // Santiago Lionel,Lorca,30904465,1999-03-17,7574\n
 type Bet struct {
 	FirstName string
@@ -18,7 +17,6 @@ type Bet struct {
 }
 
 func ParseBetLine(line string) (Bet, error) {
-	line = strings.Replace(line, "\n", "", -1)
 	fields := strings.Split(line, ",")
 	if len(fields) != BET_FIELDS_AMOUNT {
 		return Bet{}, fmt.Errorf("invalid bet payload: expected %d fields, got %d", BET_FIELDS_AMOUNT, len(fields))
@@ -32,7 +30,6 @@ func ParseBetLine(line string) (Bet, error) {
 	}, nil
 }
 
-// Campos en el orden del archivo de entrada.
 func (b Bet) Fields() []string {
 	return []string{b.FirstName, b.LastName, b.Document, b.BirthDate, b.Number}
 }

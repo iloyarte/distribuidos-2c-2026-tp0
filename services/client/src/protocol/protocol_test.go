@@ -15,7 +15,7 @@ func TestCanSendMessageUsingProtocol(t *testing.T) {
 		BirthDate: "1999-03-17",
 		Number:    "7574",
 	}
-	message := domain.BetMessage("1", bet)
+	message := domain.BetMessage("1", []domain.Bet{bet})
 	buffer := &bytes.Buffer{}
 
 	if err := SendMessage(buffer, message); err != nil {

@@ -6,4 +6,4 @@ from .message_header import (
     MessageHeader,
     MessageType,
 )
-from .parser import parse_agency_id, parse_bet, serialize_bet
+from .parser import parse_agency_id, parse_bet, parse_bets, serialize_bet
