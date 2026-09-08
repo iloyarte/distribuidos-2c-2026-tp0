@@ -19,10 +19,4 @@ def send_all(sock: socket.socket, data: bytes) -> None:
     total = len(view)
     sent = 0
     while sent < total:
-        n = sock.send(view[sent:])
-        if n == 0:
-            raise ConnectionError(
-                f"socket connection broken while sending: "
-                f"sent {sent} of {total} bytes"
-            )
-        sent += n
+        sent += sock.send(view[sent:])
